@@ -9,12 +9,26 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { Lexer } from "./lexer";
+import { Parser } from "./parser";
 import ZLangCodeGen from "./transpiler";
 
 interface CliOptions {
   inputFile: string;
   outputFile: string;
   verbose: boolean;
+}
+
+interface TranspilationResult {
+  success: boolean;
+  zlangCode: string;
+  errors: string[];
+  warnings: string[];
+  stats: {
+    inputLines: number;
+    outputLines: number;
+    statementsCount: number;
+  };
 }
 
 function parseArgs(): CliOptions {
@@ -38,6 +52,9 @@ function parseArgs(): CliOptions {
       options.outputFile = args[++i];
     } else if (arg === "-v" || arg === "--verbose") {
       options.verbose = true;
+    } else if (arg === "-h" || arg === "--help") {
+      printUsage();
+      process.exit(0);
     } else if (!options.inputFile) {
       options.inputFile = arg;
     }
@@ -50,7 +67,6 @@ function parseArgs(): CliOptions {
   }
 
   if (!options.outputFile) {
-    // Generate output filename from input
     options.outputFile = options.inputFile.replace(/\.fl$/, ".z");
   }
 
@@ -59,7 +75,7 @@ function parseArgs(): CliOptions {
 
 function printUsage(): void {
   console.log(`
-FreeLang → Z-Lang Transpiler v1.0
+FreeLang → Z-Lang Transpiler v2.0
 
 Usage:
   npx ts-node src/index.ts <input.fl> [-o <output.z>] [-v]
@@ -72,39 +88,122 @@ Options:
 Examples:
   npx ts-node src/index.ts hello.fl
   npx ts-node src/index.ts factorial.fl -o /tmp/factorial.z
+  npx ts-node src/index.ts fizzbuzz.fl -v
 `);
 }
 
-async function transpile(options: CliOptions): Promise<void> {
+function transpile(sourceCode: string, options: CliOptions): TranspilationResult {
+  const result: TranspilationResult = {
+    success: false,
+    zlangCode: "",
+    errors: [],
+    warnings: [],
+    stats: {
+      inputLines: sourceCode.split("\n").length,
+      outputLines: 0,
+      statementsCount: 0,
+    },
+  };
+
   try {
-    // 1. 입력 파일 읽기
-    if (!fs.existsSync(options.inputFile)) {
-      throw new Error(`Input file not found: ${options.inputFile}`);
-    }
-
-    const sourceCode = fs.readFileSync(options.inputFile, "utf-8");
+    // 1. Lexing
     if (options.verbose) {
-      console.log(`[*] Read ${options.inputFile} (${sourceCode.length} bytes)`);
+      console.log(`[*] Lexing...`);
     }
-
-    // 2. FreeLang 파서로 AST 생성
-    // NOTE: 실제로는 freelang-v4의 파서를 임포트해야 하지만,
-    // 이 예제에서는 간단한 파서를 사용하거나 더미 구현을 사용
-    const ast = parseFreeLang(sourceCode);
+    const lexer = new Lexer(sourceCode);
+    const tokens = lexer.tokenize();
     if (options.verbose) {
-      console.log(`[*] Parsed ${ast.stmts.length} statements`);
+      console.log(`    → ${tokens.length} tokens`);
     }
 
-    // 3. Z-Lang 코드 생성
+    // 2. Parsing
+    if (options.verbose) {
+      console.log(`[*] Parsing...`);
+    }
+    const parser = new Parser(tokens);
+    const parseResult = parser.parse();
+    result.stats.statementsCount = parseResult.program.stmts.length;
+
+    if (parseResult.errors.length > 0) {
+      result.warnings = parseResult.errors.map(
+        (e) => `Parse warning at ${e.line}:${e.col}: ${e.message}`
+      );
+    }
+    if (options.verbose) {
+      console.log(`    → ${result.stats.statementsCount} statements`);
+    }
+
+    // 3. Code Generation
+    if (options.verbose) {
+      console.log(`[*] Code generation...`);
+    }
     const codegen = new ZLangCodeGen();
-    const zlangCode = codegen.generate(ast);
+    const zlangCode = codegen.generate(parseResult.program);
+
+    result.stats.outputLines = zlangCode.split("\n").length;
     if (options.verbose) {
-      console.log(`[*] Generated ${zlangCode.length} bytes of Z-Lang code`);
+      console.log(`    → ${result.stats.outputLines} lines of Z-Lang code`);
     }
 
-    // 4. 출력 파일 저장
-    fs.writeFileSync(options.outputFile, zlangCode, "utf-8");
-    console.log(`✓ Transpiled to ${options.outputFile}`);
+    result.zlangCode = zlangCode;
+    result.success = true;
+
+  } catch (error) {
+    result.success = false;
+    result.errors.push(`Transpilation failed: ${(error as Error).message}`);
+  }
+
+  return result;
+}
+
+async function main(): Promise<void> {
+  try {
+    const options = parseArgs();
+
+    // 1. Read input file
+    if (!fs.existsSync(options.inputFile)) {
+      console.error(`Error: Input file not found: ${options.inputFile}`);
+      process.exit(1);
+    }
+
+    if (options.verbose) {
+      console.log(`📄 Reading ${options.inputFile}...`);
+    }
+    const sourceCode = fs.readFileSync(options.inputFile, "utf-8");
+
+    // 2. Transpile
+    if (options.verbose) {
+      console.log(`🔄 Transpiling FreeLang → Z-Lang...`);
+      console.log("");
+    }
+    const result = transpile(sourceCode, options);
+
+    // 3. Output
+    if (!result.success) {
+      console.error("❌ Transpilation failed:");
+      result.errors.forEach((err) => console.error(`  ${err}`));
+      process.exit(1);
+    }
+
+    // Show warnings if any
+    if (result.warnings.length > 0) {
+      console.warn("⚠️  Warnings:");
+      result.warnings.forEach((warn) => console.warn(`  ${warn}`));
+      console.warn("");
+    }
+
+    // Write output file
+    fs.writeFileSync(options.outputFile, result.zlangCode, "utf-8");
+
+    // Print summary
+    console.log(`✅ Transpilation successful!`);
+    console.log("");
+    console.log(`📊 Statistics:`);
+    console.log(`  Input:      ${result.stats.inputLines} lines`);
+    console.log(`  Statements: ${result.stats.statementsCount}`);
+    console.log(`  Output:     ${result.stats.outputLines} lines of Z-Lang`);
+    console.log("");
+    console.log(`📁 Output: ${options.outputFile}`);
 
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
@@ -112,76 +211,8 @@ async function transpile(options: CliOptions): Promise<void> {
   }
 }
 
-/**
- * 간단한 FreeLang 파서 (매우 기본적인 구현)
- * 실제로는 freelang-v4의 완전한 파서를 사용해야 함
- */
-function parseFreeLang(source: string): any {
-  // 이것은 플레이스홀더입니다
-  // 실제 구현에서는 freelang-v4의 Lexer + Parser를 사용합니다
-
-  // 예제: 간단한 토큰화
-  const lines = source.split("\n");
-  const stmts: any[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("//")) {
-      continue;
-    }
-
-    // 매우 기본적인 패턴 매칭 (실제로는 proper parser 필요)
-    if (trimmed.startsWith("fn ")) {
-      // 함수 선언
-      stmts.push(parseFunctionDecl(trimmed));
-    } else if (trimmed.startsWith("var ") || trimmed.startsWith("let ") || trimmed.startsWith("const ")) {
-      // 변수 선언
-      stmts.push(parseVarDecl(trimmed));
-    } else if (trimmed.startsWith("return ")) {
-      // Return 문
-      stmts.push(parseReturn(trimmed));
-    }
-  }
-
-  return { stmts };
-}
-
-function parseFunctionDecl(line: string): any {
-  // 매우 간단한 구현
-  return {
-    kind: "fn_decl",
-    name: "main",
-    params: [],
-    returnType: { kind: "i64" },
-    body: [
-      {
-        kind: "return_stmt",
-        value: { kind: "int_lit", value: 0 },
-      },
-    ],
-  };
-}
-
-function parseVarDecl(line: string): any {
-  return {
-    kind: "var_decl",
-    name: "x",
-    mutable: true,
-    type: { kind: "i64" },
-    init: { kind: "int_lit", value: 0 },
-  };
-}
-
-function parseReturn(line: string): any {
-  return {
-    kind: "return_stmt",
-    value: { kind: "int_lit", value: 42 },
-  };
-}
-
 // Main
-const options = parseArgs();
-transpile(options).catch((error) => {
-  console.error("Transpilation failed:", error);
+main().catch((error) => {
+  console.error("Fatal error:", error);
   process.exit(1);
 });

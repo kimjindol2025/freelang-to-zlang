@@ -1,18 +1,12 @@
 /**
- * FreeLang → Z-Lang Transpiler
+ * FreeLang → Z-Lang Transpiler (Phase 2 Enhanced)
  *
  * AST를 받아서 Z-Lang 소스 코드 문자열로 변환
  */
 
-// FreeLang AST 타입 임포트 (심볼릭 링크로 연결)
-type TypeAnnotation = any;
-type Expr = any;
-type Stmt = any;
-type Program = any;
-type Param = any;
-
 export class ZLangCodeGen {
   private indentLevel: number = 0;
+
   private indent(): string {
     return "  ".repeat(this.indentLevel);
   }
@@ -20,13 +14,13 @@ export class ZLangCodeGen {
   /**
    * 프로그램 전체 변환
    */
-  generate(ast: Program): string {
+  generate(ast: any): string {
     if (!ast || !ast.stmts) {
       return "";
     }
 
     const statements = ast.stmts
-      .map((stmt: Stmt) => this.genStmt(stmt))
+      .map((stmt: any) => this.genStmt(stmt))
       .filter((s: string) => s.length > 0)
       .join("\n");
 
@@ -36,7 +30,7 @@ export class ZLangCodeGen {
   /**
    * 문(Statement) 변환
    */
-  private genStmt(stmt: Stmt): string {
+  private genStmt(stmt: any): string {
     if (!stmt) return "";
 
     switch (stmt.kind) {
@@ -53,20 +47,18 @@ export class ZLangCodeGen {
       case "expr_stmt":
         return this.genExprStmt(stmt);
       case "spawn_stmt":
-        // Phase 2: spawn 미지원, 주석 처리
-        return `// TODO: spawn not yet supported`;
+        return this.genSpawn(stmt);
       case "match_stmt":
-        // Phase 2: match 미지원
-        return `// TODO: match not yet supported`;
+        return this.genMatch(stmt);
       default:
-        return `// TODO: unknown statement kind: ${(stmt as any).kind}`;
+        return `${this.indent()}// TODO: ${stmt.kind}`;
     }
   }
 
   /**
-   * 변수 선언: var/let/const → let + semicolon
+   * 변수 선언
    */
-  private genVarDecl(stmt: Stmt): string {
+  private genVarDecl(stmt: any): string {
     const name = stmt.name;
     const type = this.convertType(stmt.type);
     const init = this.genExpr(stmt.init);
@@ -76,16 +68,13 @@ export class ZLangCodeGen {
   /**
    * 함수 정의
    */
-  private genFunction(stmt: Stmt): string {
+  private genFunction(stmt: any): string {
     const name = stmt.name;
     const params = stmt.params
-      .map((p: Param) => `${p.name}: ${this.convertType(p.type)}`)
+      .map((p: any) => `${p.name}: ${this.convertType(p.type)}`)
       .join(", ");
 
-    const returnType = stmt.returnType
-      ? ` -> ${this.convertType(stmt.returnType)}`
-      : "";
-
+    const returnType = stmt.returnType ? ` -> ${this.convertType(stmt.returnType)}` : "";
     const body = this.genBlock(stmt.body, stmt.returnType);
     return `${this.indent()}fn ${name}(${params})${returnType} {\n${body}\n${this.indent()}}`;
   }
@@ -93,11 +82,11 @@ export class ZLangCodeGen {
   /**
    * If 문
    */
-  private genIf(stmt: Stmt): string {
+  private genIf(stmt: any): string {
     const condition = this.genExpr(stmt.condition);
     this.indentLevel++;
     const thenBody = stmt.then
-      .map((s: Stmt) => this.genStmt(s))
+      .map((s: any) => this.genStmt(s))
       .filter((s: string) => s.length > 0)
       .join("\n");
     this.indentLevel--;
@@ -107,7 +96,7 @@ export class ZLangCodeGen {
     if (stmt.else_ && stmt.else_.length > 0) {
       this.indentLevel++;
       const elseBody = stmt.else_
-        .map((s: Stmt) => this.genStmt(s))
+        .map((s: any) => this.genStmt(s))
         .filter((s: string) => s.length > 0)
         .join("\n");
       this.indentLevel--;
@@ -120,42 +109,105 @@ export class ZLangCodeGen {
   /**
    * For-in 루프 → While 변환
    */
-  private genForIn(stmt: Stmt): string {
+  private genForIn(stmt: any): string {
     const variable = stmt.variable;
     const iterable = stmt.iterable;
 
-    // range(start, end) 패턴 인식
-    if (iterable.kind === "call" &&
-        iterable.callee &&
-        iterable.callee.name === "range" &&
-        iterable.args &&
-        iterable.args.length >= 2) {
-
+    // range 패턴 인식
+    if (
+      iterable.kind === "call" &&
+      iterable.callee &&
+      iterable.callee.kind === "ident" &&
+      iterable.callee.name === "range" &&
+      iterable.args &&
+      iterable.args.length >= 2
+    ) {
       const start = this.genExpr(iterable.args[0]);
       const end = this.genExpr(iterable.args[1]);
 
       this.indentLevel++;
       const body = stmt.body
-        .map((s: Stmt) => this.genStmt(s))
+        .map((s: any) => this.genStmt(s))
         .filter((s: string) => s.length > 0)
         .join("\n");
       this.indentLevel--;
 
-      return `${this.indent()}let ${variable}: i64 = ${start};
-${this.indent()}while ${variable} <= ${end} {
-${body}
-${this.indent()}  ${variable} = ${variable} + 1;
-${this.indent()}}`;
+      return `${this.indent()}let ${variable}: i64 = ${start};\n${this.indent()}while ${variable} <= ${end} {\n${body}\n${this.indent()}  ${variable} = ${variable} + 1;\n${this.indent()}}`;
     }
 
-    // 배열 루프: Phase 2에서 지원
-    return `${this.indent()}// TODO: for-in array not yet supported`;
+    this.indentLevel++;
+    const body = stmt.body
+      .map((s: any) => this.genStmt(s))
+      .filter((s: string) => s.length > 0)
+      .join("\n");
+    this.indentLevel--;
+
+    const iterable_expr = this.genExpr(iterable);
+    return `${this.indent()}// for-in array loop\n${this.indent()}for ${variable} in ${iterable_expr} {\n${body}\n${this.indent()}}`;
+  }
+
+  /**
+   * Match 문
+   */
+  private genMatch(stmt: any): string {
+    const subject = this.genExpr(stmt.subject);
+
+    this.indentLevel++;
+    const arms = stmt.arms
+      .map((arm: any) => {
+        const pattern = this.genPattern(arm.pattern);
+        const body_expr = this.genExpr(arm.body);
+        return `${this.indent()}${pattern} => ${body_expr}`;
+      })
+      .join(",\n");
+    this.indentLevel--;
+
+    return `${this.indent()}match ${subject} {\n${arms}\n${this.indent()}}`;
+  }
+
+  /**
+   * 패턴
+   */
+  private genPattern(pattern: any): string {
+    if (!pattern) return "_";
+    switch (pattern.kind) {
+      case "ident":
+        return pattern.name;
+      case "literal":
+        return this.genExpr(pattern.value);
+      case "ok":
+        return `Ok(${this.genPattern(pattern.inner)})`;
+      case "err":
+        return `Err(${this.genPattern(pattern.inner)})`;
+      case "some":
+        return `Some(${this.genPattern(pattern.inner)})`;
+      case "none":
+        return "None";
+      case "wildcard":
+        return "_";
+      default:
+        return "_";
+    }
+  }
+
+  /**
+   * Spawn
+   */
+  private genSpawn(stmt: any): string {
+    this.indentLevel++;
+    const body = stmt.body
+      .map((s: any) => this.genStmt(s))
+      .filter((s: string) => s.length > 0)
+      .join("\n");
+    this.indentLevel--;
+
+    return `${this.indent()}// spawn task\n${this.indent()}{\n${body}\n${this.indent()}}`;
   }
 
   /**
    * Return 문
    */
-  private genReturn(stmt: Stmt): string {
+  private genReturn(stmt: any): string {
     if (stmt.value) {
       const value = this.genExpr(stmt.value);
       return `${this.indent()}return ${value};`;
@@ -167,15 +219,15 @@ ${this.indent()}}`;
   /**
    * 표현식 문
    */
-  private genExprStmt(stmt: Stmt): string {
+  private genExprStmt(stmt: any): string {
     const expr = this.genExpr(stmt.expr);
     return `${this.indent()}${expr};`;
   }
 
   /**
-   * 블록(여러 문)
+   * 블록
    */
-  private genBlock(stmts: Stmt[], returnType?: TypeAnnotation): string {
+  private genBlock(stmts: any[], returnType?: any): string {
     if (!stmts || stmts.length === 0) {
       return "";
     }
@@ -183,7 +235,6 @@ ${this.indent()}}`;
     this.indentLevel++;
     const lines: string[] = [];
 
-    // 마지막 문 이전까지 처리
     for (let i = 0; i < stmts.length - 1; i++) {
       const line = this.genStmt(stmts[i]);
       if (line.length > 0) {
@@ -191,11 +242,9 @@ ${this.indent()}}`;
       }
     }
 
-    // 마지막 문 처리: 암묵적 반환
     const lastStmt = stmts[stmts.length - 1];
     if (lastStmt) {
       if (returnType && returnType.kind !== "void" && lastStmt.kind === "expr_stmt") {
-        // 마지막이 표현식 문이고 반환 타입이 있으면 return으로 변환
         const expr = this.genExpr(lastStmt.expr);
         lines.push(`${this.indent()}return ${expr};`);
       } else {
@@ -211,9 +260,9 @@ ${this.indent()}}`;
   }
 
   /**
-   * 표현식(Expression) 변환
+   * 표현식
    */
-  private genExpr(expr: Expr): string {
+  private genExpr(expr: any): string {
     if (!expr) return "null";
 
     switch (expr.kind) {
@@ -228,90 +277,37 @@ ${this.indent()}}`;
       case "ident":
         return expr.name;
       case "binary":
-        return this.genBinaryOp(expr);
+        return `(${this.genExpr(expr.left)} ${expr.op} ${this.genExpr(expr.right)})`;
       case "unary":
-        return this.genUnaryOp(expr);
+        return `${expr.op}${this.genExpr(expr.operand)}`;
       case "call":
-        return this.genCall(expr);
+        const args = expr.args.map((a: any) => this.genExpr(a)).join(", ");
+        return `${this.genExpr(expr.callee)}(${args})`;
+      case "index":
+        return `${this.genExpr(expr.object)}[${this.genExpr(expr.index)}]`;
+      case "field_access":
+        return `${this.genExpr(expr.object)}.${expr.field}`;
       case "assign":
-        return this.genAssignment(expr);
+        return `${this.genExpr(expr.target)} = ${this.genExpr(expr.value)}`;
+      case "try":
+        return `${this.genExpr(expr.operand)}?`;
       case "if_expr":
-        return this.genIfExpr(expr);
+        return `(if ${this.genExpr(expr.condition)} { ... })`;
+      case "match_expr":
+        return `(match ...)`;
       case "array_lit":
-        return this.genArrayLit(expr);
+        return `[${expr.elements.map((e: any) => this.genExpr(e)).join(", ")}]`;
+      case "struct_lit":
+        return `{ ${expr.fields.map((f: any) => `${f.name}: ${this.genExpr(f.value)}`).join(", ")} }`;
       default:
-        return `/* TODO: ${expr.kind} */`;
+        return `/* ${expr.kind} */`;
     }
   }
 
   /**
-   * 이항 연산자
+   * 타입 변환
    */
-  private genBinaryOp(expr: Expr): string {
-    const left = this.genExpr(expr.left);
-    const right = this.genExpr(expr.right);
-    const op = expr.op;
-    return `${left} ${op} ${right}`;
-  }
-
-  /**
-   * 단항 연산자
-   */
-  private genUnaryOp(expr: Expr): string {
-    const operand = this.genExpr(expr.operand);
-    const op = expr.op;
-    return `${op}${operand}`;
-  }
-
-  /**
-   * 함수 호출
-   */
-  private genCall(expr: Expr): string {
-    const callee = this.genExpr(expr.callee);
-    const args = expr.args
-      .map((arg: Expr) => this.genExpr(arg))
-      .join(", ");
-    return `${callee}(${args})`;
-  }
-
-  /**
-   * 할당
-   */
-  private genAssignment(expr: Expr): string {
-    const target = this.genExpr(expr.target);
-    const value = this.genExpr(expr.value);
-    return `${target} = ${value}`;
-  }
-
-  /**
-   * If 표현식
-   */
-  private genIfExpr(expr: Expr): string {
-    const condition = this.genExpr(expr.condition);
-    const thenExpr = expr.then.length > 0
-      ? this.genExpr(expr.then[expr.then.length - 1])
-      : "null";
-    const elseExpr = expr.else_ && expr.else_.length > 0
-      ? this.genExpr(expr.else_[expr.else_.length - 1])
-      : "null";
-
-    return `if ${condition} { ${thenExpr} } else { ${elseExpr} }`;
-  }
-
-  /**
-   * 배열 리터럴
-   */
-  private genArrayLit(expr: Expr): string {
-    const elements = expr.elements
-      .map((e: Expr) => this.genExpr(e))
-      .join(", ");
-    return `[${elements}]`;
-  }
-
-  /**
-   * 타입 변환: FreeLang → Z-Lang
-   */
-  private convertType(type: TypeAnnotation | null): string {
+  private convertType(type: any): string {
     if (!type) return "i64";
 
     switch (type.kind) {
@@ -320,22 +316,16 @@ ${this.indent()}}`;
       case "f64":
       case "bool":
       case "string":
-        return type.kind;
       case "void":
-        return "void";
+        return type.kind;
       case "array":
-        const elementType = this.convertType(type.element);
-        return `[${elementType}]`;
+        return `[${this.convertType(type.element)}]`;
       case "channel":
-        const channelType = this.convertType(type.element);
-        return `channel<${channelType}>`;
+        return `channel<${this.convertType(type.element)}>`;
       case "option":
-        const optionType = this.convertType(type.element);
-        return `option<${optionType}>`;
+        return `option<${this.convertType(type.element)}>`;
       case "result":
-        const okType = this.convertType(type.ok);
-        const errType = this.convertType(type.err);
-        return `result<${okType}, ${errType}>`;
+        return `result<${this.convertType(type.ok)}, ${this.convertType(type.err)}>`;
       default:
         return "i64";
     }
